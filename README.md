@@ -26,6 +26,7 @@ arm = import_mdl(d + "/ger_heer_39_rfl_1.mdl", game_dir=r"D:/.../Call to Arms - 
   skinned parts with vertex groups, rigid parts following their bone. Mirrored bones handled.
 * **Meshes**: all `.ply` layouts of the game (normals, tangents, vertex colours, second uv set, 1 or 2 bone weights), several materials, LODs.
 * **Animations**: `.anm` as Actions with speeds, events as markers; the ~1600 shared soldier animations (`anim_library="basic" | "all" | regex`)
+* **Export safety check**: only the animations of the model you export are written (clips of other imported models are left out); if two clips would get the same name the game refuses the model, so the export shows a warning and lets you stop or continue (`check_export(arm)` / `export_mdl(..., confirm=callback)` from Python)
   with their registry speeds and footstep events.
 * **Materials** (diffuse, bump, specular, alpha, colour tint), **collision volumes**, obstacle shapes, preview cameras / lights, texture scrolling.
 * **.def / .ext**: the whole macro language is evaluated (includes, defines, `%params`, arithmetic, the game's shared `properties.pak`).

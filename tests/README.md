@@ -22,6 +22,9 @@ $blender = "D:/Program Files/Steam/steamapps/common/Blender/blender.exe"
 
 # File > Import / Export operators registered as an add-on
 & $blender --background --factory-startup --python tests/operators.py
+
+# export safety: other models' clips left out, duplicate animation names reported / stop / continue
+& $blender --background --factory-startup --python tests/duplicates.py
 ```
 
 * Files extracted from the game's `.pak` archives are cached in `tests/.cache` (git-ignored); exports go to `tests/out`.

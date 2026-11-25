@@ -30,7 +30,7 @@ bl_info = {
     "category": "Import-Export",
 }
 
-import bpy, os, re, math, struct, zipfile, glob, tempfile, json, collections
+import bpy, os, re, math, struct, zipfile, glob, tempfile, json, collections, textwrap
 from mathutils import Matrix, Vector, Quaternion
 
 SCALE = 0.05
@@ -1787,6 +1787,8 @@ def import_mdl(mdl_path, collection=None, import_collision=True, import_anims=Tr
         report("[goh] joint limit constraints: %d (muted because animations exceed them: %d)" % (n_con, len(viol)))
 
     arm["goh_model"] = mdl_path
+    for _a in bpy.data.actions:                    # clips imported a moment ago did not know the model path yet
+        if "goh_rig" in _a.keys() and not _a["goh_rig"]: _a["goh_rig"] = mdl_path
     if M.extras: arm["goh_model_extras"] = str(M.extras)
     for pr in problems: report("[goh] WARNING " + pr)
     bpy.ops.object.select_all(action="DESELECT")
@@ -1995,6 +1997,7 @@ def import_anm(arm, bones, bone_by_orig, path, action_name, meta=None, apply_spe
             fc.update()
     act["goh_frames"] = maxf
     act["goh_source"] = os.path.basename(path)
+    act["goh_rig"] = arm.get("goh_model", "")          # which imported model this clip belongs to
     if meta:
         if meta.get("speed") is not None: act["goh_speed"] = meta["speed"]
         act["goh_speed_applied"] = bool(apply_speed)
@@ -2669,9 +2672,46 @@ def def_text_with_edits(arm):
 
 
 # ---------------------------------------------------------------------------------- driver
+class GohExportCancelled(Exception):
+    pass
+
+
+def _exportable_actions(arm, library_anims=False):
+    """(action, file name) for every clip that goes with this armature, and the names of clips left out because they came
+       from another imported model"""
+    mine = arm.get("goh_model", "")
+    out, other = [], []
+    for act in bpy.data.actions:
+        if act.get("goh_library") and not library_anims: continue
+        if not any(re.match(r'pose\.bones\["', fc.data_path) for fc in _action_fcurves(act)): continue
+        rig = act.get("goh_rig")
+        if rig and mine and rig != mine:
+            other.append(act.name); continue
+        out.append((act, os.path.basename(act.get("goh_source") or (re.sub(r"[^\w\-.]", "_", act.name) + ".anm"))))
+    return out, other
+
+
+def check_export(arm, anims=True, library_anims=False):
+    """problems that would give a model the game refuses to load; empty list = fine"""
+    problems = []
+    if anims:
+        by_name = collections.defaultdict(list)
+        for act, fn in _exportable_actions(arm, library_anims)[0]:
+            by_name[os.path.splitext(fn)[0].lower()].append(act.name)
+        for stem, acts in sorted(by_name.items()):
+            if len(acts) > 1:
+                problems.append('animation name "%s" would be written %d times (%s) - the game stops with "Animation with duplicate name". '
+                                'Delete or rename the extra actions, usually left over from importing a second model.' % (stem, len(acts), ", ".join(acts)))
+    return problems
+
+
 def export_mdl(arm, out_dir, mdl_name=None, meshes=True, anims=True, library_anims=False, materials=True, textures=True,
-               volumes=True, def_files=True, copy_unexported=True, report=print):
+               volumes=True, def_files=True, copy_unexported=True, report=print, confirm=None):
     """Write the rig + everything it references into out_dir. Returns the list of written files."""
+    problems = check_export(arm, anims, library_anims)
+    for pr in problems: report("[goh] WARNING " + pr)
+    if problems and confirm is not None and not confirm(problems):
+        raise GohExportCancelled("export stopped: " + "; ".join(problems))
     os.makedirs(out_dir, exist_ok=True)
     written = []
     def w(p): written.append(p); return p
@@ -2746,10 +2786,9 @@ def export_mdl(arm, out_dir, mdl_name=None, meshes=True, anims=True, library_ani
     # ---- animations
     new_actions = []
     if anims:
-        for act in bpy.data.actions:
-            if act.get("goh_library") and not library_anims: continue
-            if not any(re.match(r'pose\.bones\["', fc.data_path) for fc in _action_fcurves(act)): continue
-            fn = act.get("goh_source") or (re.sub(r"[^\w\-.]", "_", act.name) + ".anm")
+        acts, other = _exportable_actions(arm, library_anims)
+        if other: report("[goh] left out %d animation(s) that belong to another imported model: %s" % (len(other), ", ".join(other[:6])))
+        for act, fn in acts:
             try:
                 if write_anm(w(os.path.join(out_dir, os.path.basename(fn))), act, arm, report):
                     speed = act.get("goh_speed")
@@ -2827,18 +2866,50 @@ try:
         textures: BoolProperty(name="Save new / edited textures (.dds)", default=True)
         volumes: BoolProperty(name="Collision volumes (.vol)", default=True)
         defs: BoolProperty(name=".def / .ext", default=True)
+        confirmed: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
-        def execute(self, context):
+        def _arm(self, context):
             arm = context.active_object
             if arm is None or arm.type != "ARMATURE":
                 arms = [o for o in context.scene.objects if o.type == "ARMATURE" and "goh_model" in o.keys()]
                 arm = arms[0] if arms else None
+            return arm
+
+        def invoke(self, context, event):
+            # problems that make the game refuse the model are shown first; OK = export anyway, Cancel = stop
+            arm = self._arm(context)
+            self._problems = check_export(arm, self.anims, self.library) if arm is not None else []
+            if self._problems and not self.confirmed:
+                try:
+                    return context.window_manager.invoke_props_dialog(self, width=520, title="Export problems found", confirm_text="Export anyway")
+                except TypeError:       # older Blender without title / confirm_text
+                    return context.window_manager.invoke_props_dialog(self, width=520)
+            return ExportHelper.invoke(self, context, event)
+
+        def draw(self, context):
+            problems = getattr(self, "_problems", None)
+            if problems and not self.filepath:
+                col = self.layout.column()
+                for pr in problems:
+                    for line in textwrap.wrap(pr, 78): col.label(text=line)
+                col.label(text="Export anyway, or Cancel to stop and fix it first.")
+            else:
+                for prop in ("meshes", "anims", "library", "materials", "textures", "volumes", "defs"): self.layout.prop(self, prop)
+
+        def execute(self, context):
+            if not self.filepath and not self.confirmed:      # OK pressed in the problems dialog: now ask where to save
+                bpy.ops.export_scene.goh_mdl("INVOKE_DEFAULT", confirmed=True, meshes=self.meshes, anims=self.anims, library=self.library,
+                                             materials=self.materials, textures=self.textures, volumes=self.volumes, defs=self.defs)
+                return {"FINISHED"}
+            arm = self._arm(context)
             if arm is None:
                 self.report({"ERROR"}, "select the model's armature"); return {"CANCELLED"}
             try:
                 export_mdl(arm, os.path.dirname(self.filepath), os.path.splitext(os.path.basename(self.filepath))[0], meshes=self.meshes,
                            anims=self.anims, library_anims=self.library, materials=self.materials, textures=self.textures,
                            volumes=self.volumes, def_files=self.defs, report=lambda s: self.report({"INFO"}, s))
+            except GohExportCancelled as e:
+                self.report({"WARNING"}, str(e)); return {"CANCELLED"}
             except Exception as e:
                 import traceback; traceback.print_exc(); self.report({"ERROR"}, str(e)); return {"CANCELLED"}
             return {"FINISHED"}
