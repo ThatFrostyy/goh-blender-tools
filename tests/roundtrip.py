@@ -13,12 +13,10 @@ from mathutils import Matrix
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env
 _env.load_tools(globals())
-GAME, MODH, OUT = _env.GAME, _env.MOD_ENTITY, _env.OUT
+GAME, OUT = _env.GAME, _env.OUT
 
-# kind, path (or pak folder / search text), mdl name (optional)
+# kind, pak folder / search text, mdl name (optional)
 CASES = {
-    "mod_soldier_old":    ("file", MODH + "humanskin/yug_inf_rfl/yug_inf_rfl.mdl"),
-    "mod_tank_sid":       ("file", MODH + "-vehicle/yugoslavia/tank_light/t32sid_yug/t32sid_yug.mdl"),
     "game_soldier_new":   ("pak", "entity/humanskin/[germans]/ger_heer_39", "ger_heer_39_rfl_1.mdl"),
     "game_tank":          ("pak", "entity/-vehicle/finland/tank_medium/t3485_44_fin", "t3485_44.mdl"),
     "game_cannon":        ("pak", "entity/-vehicle/ussr/cannon/76mm_zis3", "76mm_zis3.mdl"),
