@@ -17,6 +17,9 @@ $blender = "D:/Program Files/Steam/steamapps/common/Blender/blender.exe"
 # soldier animation library (timing + idle pose sanity)
 & $blender --background --factory-startup --python tests/animations.py
 
+# DDS texture writer (encodes real game textures, compares what Blender reads back)
+& $blender --background --factory-startup --python tests/dds.py
+
 # File > Import / Export operators registered as an add-on
 & $blender --background --factory-startup --python tests/operators.py
 ```

@@ -41,7 +41,7 @@ Select the model's armature, **File > Export > Gates of Hell model (.mdl)**, pic
 * `.ply` for every mesh object (exact vertex layout of the original, tangents recomputed, weights limited to 2 bones, max 22 bones per mesh is warned),
 * `.anm` for every action (the shared library actions only if asked), `.mtl` for the materials, `.vol` for edited collision meshes,
 * `.def` and local `.ext` from their text blocks; armour values you changed on the `vol_*` objects are appended as override blocks,
-* new textures made in Blender are saved as `.tga` (the game reads those), textures referenced by name next to the model are copied along.
+* new or edited textures (an image made in Blender, a changed image, or any image with the custom property `goh_export`) are written as `.dds` - DXT1 when opaque, DXT5 with alpha, full mipmap chain, like the game's own textures; the image name (or its `goh_name` property) becomes the texture name in the `.mtl`. Textures referenced by name next to the model are copied along.
 
 An unchanged import round-trips: positions and UVs exact, normals within 0.001, tangents about 1 degree, bones, weights, animations and
 properties identical (see `tests/`).
@@ -56,7 +56,7 @@ All of them go through the same readers and writers; `docs/FORMATS.md` describes
 * Only Blender 5.3 was tested. The game itself was **not** run with exported files: exports are verified by re-importing them and comparing, not in game.
 * Collision box / cylinder orientation, obstacle shapes, the side byte meaning in `.vol` files and the `speed2` meaning (turn speed) are best interpretations.
 * Edited limits/speeds are written to the `.mdl`; a `.def` that overrides the same bone keeps overriding them.
-* Textures are not converted to `.dds` (the game also reads `.tga`); models that need more than 22 bones per mesh must be split.
+* Models that need more than 22 bones per mesh must be split.
 * The code is MIT licensed (see `LICENSE`). The game's files and anything extracted from them (meshes, textures) remain the property of their owners and are not part of this repository.
 
 ## Tests

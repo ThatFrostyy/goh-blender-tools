@@ -2049,6 +2049,138 @@ def _xform_lines(v12, root, indent):
     return [pad + "{matrix34"] + rows + ["%s\t%s" % (pad, " ".join(_n(x) for x in t)), pad + "}"]
 
 
+# ---------------------------------------------------------------------------------- .dds
+def _np():
+    import numpy as np
+    return np
+
+
+def _resize_axis(a, n, axis):
+    """linear resample along one axis (used for mip levels of odd sizes)"""
+    np = _np()
+    m = a.shape[axis]
+    if m == n: return a
+    src = (np.arange(n) + 0.5) * m / n - 0.5
+    i0 = np.clip(np.floor(src).astype(int), 0, m - 1); i1 = np.clip(i0 + 1, 0, m - 1)
+    f = (src - np.floor(src)).reshape([-1 if d == axis else 1 for d in range(a.ndim)])
+    return np.take(a, i0, axis=axis) * (1 - f) + np.take(a, i1, axis=axis) * f
+
+
+def _mip_chain(rgba):
+    np = _np()
+    levels = [rgba]
+    h, w = rgba.shape[:2]
+    while w > 1 or h > 1:
+        nh, nw = max(h // 2, 1), max(w // 2, 1)
+        cur = levels[-1]
+        if h % 2 == 0 and w % 2 == 0 and h > 1 and w > 1:
+            nxt = (cur[0::2, 0::2] + cur[1::2, 0::2] + cur[0::2, 1::2] + cur[1::2, 1::2]) * 0.25
+        else:
+            nxt = _resize_axis(_resize_axis(cur, nh, 0), nw, 1)
+        levels.append(nxt); h, w = nh, nw
+    return levels
+
+
+def _blocks(level):
+    """(h, w, 4) float 0..255 -> (n_blocks, 16, 4), edges padded to a multiple of 4"""
+    np = _np()
+    h, w = level.shape[:2]
+    ph, pw = (4 - h % 4) % 4, (4 - w % 4) % 4
+    if ph or pw: level = np.pad(level, ((0, ph), (0, pw), (0, 0)), mode="edge")
+    H, W = level.shape[:2]
+    b = level.reshape(H // 4, 4, W // 4, 4, 4).transpose(0, 2, 1, 3, 4).reshape(-1, 16, 4)
+    return b
+
+
+def _rgb565(c):
+    np = _np()
+    c = np.clip(np.rint(c), 0, 255).astype(np.int32)
+    return ((c[:, 0] * 31 + 127) // 255 << 11) | ((c[:, 1] * 63 + 127) // 255 << 5) | ((c[:, 2] * 31 + 127) // 255)
+
+
+def _unrgb565(v):
+    np = _np()
+    r = (v >> 11) & 31; g = (v >> 5) & 63; b = v & 31
+    return np.stack([r * 255.0 / 31, g * 255.0 / 63, b * 255.0 / 31], axis=1)
+
+
+def _dxt_color_blocks(b):
+    """b: (n,16,4) -> (n, 8 bytes) colour part of DXT1/DXT5 (always the 4-colour mode)"""
+    np = _np()
+    rgb = b[:, :, :3]
+    mn = rgb.min(axis=1); mx = rgb.max(axis=1)
+    inset = (mx - mn) / 16.0
+    hi = mx - inset; lo = mn + inset
+    c0 = _rgb565(hi); c1 = _rgb565(lo)
+    swap = c0 < c1
+    c0, c1 = np.where(swap, c1, c0), np.where(swap, c0, c1)
+    flat = c0 == c1                                  # c0 == c1 would select the 3-colour mode: nudge so index 0..3 stay valid
+    p0 = _unrgb565(c0); p1 = _unrgb565(c1)
+    pal = np.stack([p0, p1, (2 * p0 + p1) / 3.0, (p0 + 2 * p1) / 3.0], axis=1)         # (n,4,3)
+    d = ((rgb[:, :, None, :] - pal[:, None, :, :]) ** 2).sum(axis=3)                   # (n,16,4)
+    idx = d.argmin(axis=2).astype(np.uint32)                                           # (n,16)
+    packed = np.zeros(len(b), dtype=np.uint32)
+    for i in range(16): packed |= idx[:, i] << (2 * i)
+    out = np.zeros((len(b), 8), dtype=np.uint8)
+    out[:, 0] = c0 & 255; out[:, 1] = (c0 >> 8) & 255; out[:, 2] = c1 & 255; out[:, 3] = (c1 >> 8) & 255
+    for k in range(4): out[:, 4 + k] = (packed >> (8 * k)) & 255
+    return out
+
+
+def _dxt5_alpha_blocks(b):
+    np = _np()
+    a = b[:, :, 3]
+    a0 = np.clip(np.rint(a.max(axis=1)), 0, 255).astype(np.int32); a1 = np.clip(np.rint(a.min(axis=1)), 0, 255).astype(np.int32)
+    swap = a0 < a1
+    a0, a1 = np.where(swap, a1, a0), np.where(swap, a0, a1)
+    pal = np.zeros((len(b), 8)); pal[:, 0] = a0; pal[:, 1] = a1
+    for i in range(1, 7): pal[:, 1 + i] = ((7 - i) * a0 + i * a1) / 7.0           # 8-value mode (a0 > a1)
+    eq = a0 == a1
+    d = np.abs(a[:, :, None] - pal[:, None, :])
+    idx = d.argmin(axis=2).astype(np.uint64)
+    bits = np.zeros(len(b), dtype=np.uint64)
+    for i in range(16): bits |= idx[:, i] << np.uint64(3 * i)
+    out = np.zeros((len(b), 8), dtype=np.uint8)
+    out[:, 0] = a0; out[:, 1] = a1
+    for k in range(6): out[:, 2 + k] = ((bits >> np.uint64(8 * k)) & np.uint64(255)).astype(np.uint8)
+    return out
+
+
+def encode_dds(rgba, mips=True):
+    """rgba: float array (h, w, 4) in 0..1, top row first.  DXT1 when fully opaque, DXT5 otherwise (what the game's textures use)."""
+    np = _np()
+    a = np.asarray(rgba, dtype=np.float64) * 255.0
+    h, w = a.shape[:2]
+    alpha = bool((a[:, :, 3] < 254.5).any())
+    levels = _mip_chain(a) if mips else [a]
+    data = bytearray()
+    first_size = 0
+    for li, lv in enumerate(levels):
+        b = _blocks(lv)
+        col = _dxt_color_blocks(b)
+        blk = np.concatenate([_dxt5_alpha_blocks(b), col], axis=1) if alpha else col
+        raw = blk.tobytes()
+        if li == 0: first_size = len(raw)
+        data += raw
+    flags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x80000 | (0x20000 if mips else 0)
+    caps = 0x1000 | ((0x8 | 0x400000) if mips else 0)
+    hdr = b"DDS " + struct.pack("<7I", 124, flags, h, w, first_size, 0, len(levels) if mips else 0) + b"\x00" * 44
+    hdr += struct.pack("<2I4s5I", 32, 4, b"DXT5" if alpha else b"DXT1", 0, 0, 0, 0, 0)
+    hdr += struct.pack("<5I", caps, 0, 0, 0, 0)
+    return bytes(hdr) + bytes(data)
+
+
+def image_to_dds(img, path, mips=True):
+    """write a Blender image as a game .dds (DXT1/DXT5 with mipmaps)"""
+    np = _np()
+    w, h = img.size
+    buf = np.empty(w * h * 4, dtype=np.float32)
+    img.pixels.foreach_get(buf)
+    rgba = np.flipud(buf.reshape(h, w, 4))             # Blender stores the bottom row first
+    open(path, "wb").write(encode_dds(rgba, mips))
+    return path
+
+
 # ---------------------------------------------------------------------------------- .mtl
 def write_mtl(path, mat):
     kind = mat.get("goh_kind") or ("bump" if any(n.type == "NORMAL_MAP" for n in mat.node_tree.nodes) else "simple") if mat.use_nodes else "simple"
@@ -2067,26 +2199,34 @@ def write_mtl(path, mat):
     open(path, "w", encoding="utf-8", newline="\n").write("\n".join(L) + "\n")
 
 
+def _tex_stem(img):
+    return img.get("goh_name") or os.path.splitext(os.path.basename(img.filepath or img.name))[0] or img.name
+
+
 def _save_new_texture(mat, out_dir, report):
-    """a material made in Blender without game texture names: save its image as .tga and give it game style names"""
-    if not mat.use_nodes: return
-    if any(mat.get("goh_" + k) for k in ("diffuse", "bump", "specular")): return
+    """textures made or changed in Blender -> .dds next to the model (DXT1 / DXT5 with mipmaps, like the game's own).
+       A material without game texture names gets them from its image; a changed image (unsaved edit, or custom property
+       goh_export on the image) is written under its name (custom property goh_name overrides the file name)."""
+    if not mat.use_nodes: return []
+    out = []
+    fresh = not any(mat.get("goh_" + k) for k in ("diffuse", "bump", "specular"))
     for n in mat.node_tree.nodes:
         if n.type != "TEX_IMAGE" or not n.image: continue
-        use = [l.to_socket.name for o in n.outputs for l in o.links]
-        key = "diffuse" if "Base Color" in use or not use else ("bump" if "Color" in use else None)
-        if "Color" in use and any(l.to_node.type == "NORMAL_MAP" for o in n.outputs for l in o.links): key = "bump"
-        if key is None or mat.get("goh_" + key): continue
         img = n.image
-        stem = os.path.splitext(os.path.basename(img.filepath or img.name))[0] or img.name
-        dst = os.path.join(out_dir, stem + ".tga")
+        changed = img.is_dirty or bool(img.get("goh_export"))
+        if not (fresh or changed): continue
+        links = [l.to_node for o in n.outputs for l in o.links]
+        kind = "bump" if any(x.type == "NORMAL_MAP" for x in links) else ("specular" if any(x.type == "RGB_TO_BW" for x in links) else "diffuse")
+        if fresh and kind == "specular" and not any(x.type in ("RGB_TO_BW",) for x in links): continue
+        stem = _tex_stem(img)
         try:
-            copy = img.copy(); copy.filepath_raw = dst; copy.file_format = "TARGA"; copy.save()
-            bpy.data.images.remove(copy)
-            mat["goh_" + key] = stem
-            report("[goh] saved new texture " + dst)
+            image_to_dds(img, os.path.join(out_dir, stem + ".dds"))
+            if fresh or changed: mat["goh_" + kind] = img.get("goh_ref") or stem
+            out.append(os.path.join(out_dir, stem + ".dds"))
+            report("[goh] saved texture %s.dds (%dx%d)" % (stem, img.size[0], img.size[1]))
         except Exception as e:
             report("[goh] WARNING texture %s not saved: %s" % (img.name, e))
+    return out
 
 
 # ---------------------------------------------------------------------------------- .vol
@@ -2570,7 +2710,7 @@ def export_mdl(arm, out_dir, mdl_name=None, meshes=True, anims=True, library_ani
         src_dir_t = os.path.dirname(arm.get("goh_model", "")) or None
         res_t = Resolver(src_dir_t, arm.get("goh_game_dir") or None) if src_dir_t else None
         for m in mats.values():
-            if textures: _save_new_texture(m, out_dir, report)
+            if textures: written.extend(_save_new_texture(m, out_dir, report))
             if textures and res_t is not None:
                 for key in ("diffuse", "bump", "specular"):
                     ref = m.get("goh_" + key)
@@ -2610,6 +2750,7 @@ def export_mdl(arm, out_dir, mdl_name=None, meshes=True, anims=True, library_ani
             if old_mdl and old_mdl != mdl_name:
                 dtxt = re.sub(r'(\{\s*extension\s+")[^"]*(")', r"\g<1>%s.mdl\g<2>" % mdl_name, dtxt, flags=re.I)
             dname = os.path.basename(arm.get("goh_def_file", "")) or (mdl_name + ".def")
+            if old_mdl and old_mdl != mdl_name: dname = mdl_name + ".def"      # a renamed model is a new entity: its .def is named after it
             open(w(os.path.join(out_dir, dname)), "w", encoding="utf-8", newline="\n").write(dtxt)
         for tname in json.loads(arm.get("goh_local_includes", "[]")):
             if tname in bpy.data.texts:
@@ -2662,7 +2803,7 @@ try:
         anims: BoolProperty(name="Animations (.anm)", default=True)
         library: BoolProperty(name="Shared library animations", default=False)
         materials: BoolProperty(name="Materials (.mtl)", default=True)
-        textures: BoolProperty(name="Save new textures (.tga)", default=True)
+        textures: BoolProperty(name="Save new / edited textures (.dds)", default=True)
         volumes: BoolProperty(name="Collision volumes (.vol)", default=True)
         defs: BoolProperty(name=".def / .ext", default=True)
 
