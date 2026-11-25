@@ -222,7 +222,7 @@ def read_text(p):
 def parse_mtl(path):
     """returns dict(kind, diffuse, bump, specular, color, blend)"""
     nodes, _ = parse_nodes(tokenize(read_text(path)))
-    res = {"kind": "simple", "diffuse": None, "bump": None, "specular": None, "color": None, "blend": None}
+    res = {"kind": "simple", "diffuse": None, "bump": None, "specular": None, "color": None, "blend": None, "extra": []}
     for head, kids in nodes:
         if head and head[0] == "material":
             if len(head) > 1: res["kind"] = head[1]
@@ -233,6 +233,7 @@ def parse_mtl(path):
                 elif k == "color":
                     try: res["color"] = [float(x) for x in v.split()[:4]] if v else None
                     except ValueError: res["color_raw"] = v; res["color"] = None
+                else: res["extra"].append([h[0], v])        # diffuse1 / bump1 / lightmaps ... kept as they are
     return res
 
 
@@ -692,7 +693,9 @@ def make_material(mtl_path, res):
             nt.links.new(mul.outputs["Value"], inp)
     mat["goh_mtl"] = os.path.basename(mtl_path)
     for k, v in info.items():
-        if v is not None and k != "color": mat["goh_" + k] = str(v)
+        if k == "extra":
+            if v: mat["goh_extra"] = json.dumps(v)
+        elif v is not None and k != "color": mat["goh_" + k] = str(v)
     if info["color"]: mat["goh_color"] = info["color"]
     return mat
 
@@ -2204,6 +2207,8 @@ def write_mtl(path, mat):
     for key in ("diffuse", "bump", "specular"):
         v = mat.get("goh_" + key)
         if v: L.append('\t{%s "%s"}' % (key, v))
+    if mat.get("goh_extra"):
+        for k, v in json.loads(mat["goh_extra"]): L.append('	{%s "%s"}' % (k, v))
     col = mat.get("goh_color")
     if col is not None:
         L.append('\t{color "%s"}' % " ".join(str(int(round(x))) for x in col))
