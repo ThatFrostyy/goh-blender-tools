@@ -57,7 +57,7 @@ All of them go through the same readers and writers; `docs/FORMATS.md` describes
 * Collision box / cylinder orientation, obstacle shapes, the side byte meaning in `.vol` files and the `speed2` meaning (turn speed) are best interpretations.
 * Edited limits/speeds are written to the `.mdl`; a `.def` that overrides the same bone keeps overriding them.
 * Textures are not converted to `.dds` (the game also reads `.tga`); models that need more than 22 bones per mesh must be split.
-* There is no license file yet; the game's files and the textures you extract remain the property of their owners.
+* The code is MIT licensed (see `LICENSE`). The game's files and anything extracted from them (meshes, textures) remain the property of their owners and are not part of this repository.
 
 ## Tests
 `tests/README.md` - headless round-trip, import and animation tests (`GOH_GAME_DIR` must point at the game).
