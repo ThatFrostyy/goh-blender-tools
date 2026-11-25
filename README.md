@@ -32,6 +32,8 @@ arm = import_mdl(d + "/ger_heer_39_rfl_1.mdl", game_dir=r"D:/.../Call to Arms - 
   Armour per volume (`goh_thickness_front` ...), component hit points, mass, mobility numbers, seats, weapon places, visors as custom properties;
   the original and the fully expanded text are kept as Blender text blocks.
 * Files are found next to the model, in your mod and game `resource` folders, and inside the `.pak` archives (extracted on demand into a cache).
+  If the model lives outside your mod folder (e.g. a scratch export), set the environment variable `GOH_EXTRA_RESOURCE` to your mod's `resource` folder
+  (several folders separated by `;`) so its loose textures are found.
 
 ## Export
 Select the model's armature, **File > Export > Gates of Hell model (.mdl)**, pick the target folder/name. It writes:

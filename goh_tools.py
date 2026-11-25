@@ -85,6 +85,9 @@ class Resolver:
                 p = parent
         if self.game_dir:
             self.resource_dirs.append(os.path.join(self.game_dir, "resource"))
+        # extra resource folders (e.g. your mod's, when the model lives somewhere else): env var GOH_EXTRA_RESOURCE, ';' separated
+        for extra in os.environ.get("GOH_EXTRA_RESOURCE", "").split(";"):
+            if extra.strip() and os.path.isdir(extra.strip()): self.resource_dirs.insert(0, extra.strip())
         self._index = None
 
     # ---- pak index: lower-case virtual path ("entity/humanskin/x/y.ply") -> (pak, name, virtual)
