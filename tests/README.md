@@ -16,6 +16,9 @@ $blender = "D:/Program Files/Steam/steamapps/common/Blender/blender.exe"
 
 # soldier animation library (timing + idle pose sanity)
 & $blender --background --factory-startup --python tests/animations.py
+
+# File > Import / Export operators registered as an add-on
+& $blender --background --factory-startup --python tests/operators.py
 ```
 
 * Files extracted from the game's `.pak` archives are cached in `tests/.cache` (git-ignored); exports go to `tests/out`.
