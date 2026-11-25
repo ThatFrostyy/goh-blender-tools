@@ -61,7 +61,7 @@ Shared soldier animations: `properties.pak: properties/animation/human/**.anm`, 
 ```
 `matrix34` is 3 rows R then translation t, row-vector convention (`p' = p R + t`); Blender needs `R^T`. Joint axes: revolute = local Z (degrees),
 prizmatic = local Y (metres, 20 units = 1 m), socket = cone angle.
-Soldiers: old style (this mod) = one baked `skin.ply` with 3 duplicate skin bones (`skins`, `skind`, `skinw`); new style = one `skin` bone with a
+Soldiers: older style = one baked `skin.ply` with 3 duplicate skin bones (`skins`, `skind`, `skinw`); new style = one `skin` bone with a
 `LODView` group per part (head, tunic, trousers, gear ...) taken from shared `[source]` folders.
 
 ## .mtl

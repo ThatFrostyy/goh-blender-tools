@@ -47,17 +47,13 @@ An unchanged import round-trips: positions and UVs exact, normals within 0.001, 
 properties identical (see `tests/`).
 
 ## Differences between model types
-Soldiers use two pipelines: this mod's old style (one baked `skin.ply`, duplicate skin bones) and the game's new modular style (head, tunic,
-trousers, gear as separate `skin`-bone parts from shared source folders). Vehicles are rigid parts plus skinned tracks / suspension, guns and planes
-use the same rig structure with different joint types, buildings and landscape pieces are mostly meshes with collision volumes and vertex colours.
-All of them go through the same readers and writers; `docs/FORMATS.md` describes the formats.
+Soldiers come in two styles: an older one (a single baked `skin.ply` with duplicate skin bones) and the game's current modular one (head, tunic,
+trousers and gear as separate parts on one `skin` bone, taken from shared source folders). Vehicles are rigid parts plus skinned tracks and suspension,
+guns and planes use the same rig structure with different joint types, and buildings and landscape pieces are mostly meshes with collision volumes
+and vertex colours. All of them go through the same readers and writers; `docs/FORMATS.md` describes the formats.
 
-## Known limits
-* Only Blender 5.3 was tested. The game itself was **not** run with exported files: exports are verified by re-importing them and comparing, not in game.
-* Collision box / cylinder orientation, obstacle shapes, the side byte meaning in `.vol` files and the `speed2` meaning (turn speed) are best interpretations.
-* Edited limits/speeds are written to the `.mdl`; a `.def` that overrides the same bone keeps overriding them.
-* Models that need more than 22 bones per mesh must be split.
-* The code is MIT licensed (see `LICENSE`). The game's files and anything extracted from them (meshes, textures) remain the property of their owners and are not part of this repository.
+## License
+MIT, see `LICENSE`. The game's files and anything extracted from them (meshes, textures) remain the property of their owners and are not part of this repository.
 
 ## Tests
 `tests/README.md` - headless round-trip, import and animation tests (`GOH_GAME_DIR` must point at the game).

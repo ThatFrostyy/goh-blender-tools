@@ -25,7 +25,7 @@ $blender = "D:/Program Files/Steam/steamapps/common/Blender/blender.exe"
 ```
 
 * Files extracted from the game's `.pak` archives are cached in `tests/.cache` (git-ignored); exports go to `tests/out`.
-* `GOH_MOD_ENTITY` (optional) points at a mod's `resource/entity/` folder for the two mod cases
-  (default: `<game>/mods/yugoslavia_rework_dev/resource/entity/`); they are skipped when it does not exist.
+* `GOH_MOD_ENTITY` (optional) points at a mod's `resource/entity/` folder for the two `mod_*` cases (an old-style soldier and a modded tank);
+  they are skipped when the folder or models do not exist.
 * Last run (Blender 5.3): the 16 round-trip cases give 14 perfect matches; the other two differ only
   in 2 to 6 vertices per mesh that no triangle used (the exporter drops them). 400 sampled game models import without failures.
