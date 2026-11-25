@@ -1134,7 +1134,18 @@ def find_def_files(model_dir, mdl_name):
 
 def load_def(res, model_dir, mdl_name, report=print):
     files = find_def_files(model_dir, mdl_name)
-    if not files: return None
+    if not files:
+        used = set()
+        try:
+            for f in os.listdir(model_dir):
+                if f.lower().endswith(".def"):
+                    mm = re.search(r'\{\s*extension\s+"([^"]+)"', _read(os.path.join(model_dir, f)), re.I)
+                    if mm: used.add(mm.group(1))
+        except OSError:
+            pass
+        if used and mdl_name.lower() not in {u.lower() for u in used}:
+            report("[goh] WARNING: no .def in this folder uses %s; the game loads %s instead." % (mdl_name, ", ".join(sorted(used))))
+        return None
     D = DefData()
     D.path = os.path.join(model_dir, files[0]); D.all_files = files
     D.text = _read(D.path)
@@ -1147,6 +1158,11 @@ def load_def(res, model_dir, mdl_name, report=print):
             root = x.items; break
     D.root = root if root is not None else tree
     for e in D.env.errors: report("[goh] def: " + e)
+    m = re.search(r'\{\s*extension\s+"([^"]+)"', D.text, re.I)
+    D.extension = m.group(1) if m else None
+    if D.extension and D.extension.lower() != mdl_name.lower():
+        report("[goh] WARNING: the game does not load %s for this entity - %s says it uses %s. Edit that file instead, "
+               "or your changes will not show up in game (an exported copy of an unused .mdl can break placed units)." % (mdl_name, os.path.basename(D.path), D.extension))
     return D
 
 

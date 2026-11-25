@@ -36,6 +36,8 @@ arm = import_mdl(d + "/ger_heer_39_rfl_1.mdl", game_dir=r"D:/.../Call to Arms - 
   (several folders separated by `;`) so its loose textures are found.
 
 ## Export
+Import and edit the `.mdl` that the entity's `.def` points at (`{Extension "x.mdl"}`). Some folders contain extra `.mdl` files that the game never loads; the importer warns when you open one of those.
+
 Select the model's armature, **File > Export > Gates of Hell model (.mdl)**, pick the target folder/name. It writes:
 * `.mdl` rebuilt from the armature (bone transforms, joint limits and speeds, parameters, mesh references incl. LOD groups, volumes, obstacles, previews),
 * `.ply` for every mesh object (exact vertex layout of the original, tangents recomputed, weights limited to 2 bones, max 22 bones per mesh is warned),
