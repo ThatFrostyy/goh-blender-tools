@@ -66,7 +66,10 @@ Sidebar tab **GOH** in the 3D view (N panel) next to the import / export buttons
 * **Check model**: lists what the game would refuse or silently drop (meshes not on a bone or moved out of their bone's frame, missing required bones, more than 65535 vertices, duplicate names)
   and warns about missing materials / textures / UVs / collision and unusual model size. The report is the text block `goh_check`; the export dialog can also write it as `goh_check.txt`
   with the size and SHA-1 of every written file.
-* A rig made by the template exports a **starter `.def`** (tank entity with your volumes as armour entries); weapons, crew and sounds still have to be filled in by hand or copied from a similar unit.
+* **Left / right**: all 488 vehicles of the game have a mirrored root bone (`basis` with Y flipped); models are authored the normal right-handed way (front +X, left +Y) and the engine mirrors the world.
+  Rigs made by the *Tank* template get that root written on export. Imported game models show up mirrored left-to-right in Blender for the same reason (their `wheell` bones sit at -Y), so do not copy parts between
+  an imported model and a from-scratch one without mirroring them.
+* A rig made by the template exports a **starter `.def`** (tank entity with your volumes as armour entries; it expands with the game's own includes to the same properties as a real tank's `.def`, except weapon places and crew seats, which still have to be filled in by hand or copied from a similar unit).
   Not covered: animations (author them as Actions), tracks / skinned suspension, and the unit's `.set` registration.
 From Python: `create_rig`, `adopt_mesh`, `generate_volume`, `validate_model`, `format_report` (see `tests/from_scratch.py`).
 

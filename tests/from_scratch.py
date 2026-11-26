@@ -1,6 +1,6 @@
 """Model from scratch: rig template, meshes made outside the game rig, attach to bones, generated collision volumes,
 check report, export, import the export again and compare size / bones / volumes."""
-import bpy, sys, os, json
+import bpy, sys, os, json, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env
 _env.load_tools(globals())
@@ -67,6 +67,7 @@ for need in ("scratch_tank.mdl", "scratch_tank.def", "hull.ply", "turret.ply", "
 mdl = open(os.path.join(out, "scratch_tank.mdl")).read()
 for s in ('{bone prizmatic "suspension_l3"', '{bone revolute "wheelr4"', '"id=trackleft;radius=0.32;"', '{VolumeView "trackl.ply"}', '{sequence "fire" {speed 0.7}}'):
     assert s in mdl, "mdl lacks " + s
+assert re.search(r'\{bone "basis"\s*\{orientation\s*1 0 0\s*0 -1 0\s*0 0 1\s*\}', mdl), "root must carry the game's Y mirror"
 assert '{bone revolute "turret"' in mdl and '{polyhedron "body1.vol"}' in mdl and 'VolumeView "hull.ply"' in mdl, "mdl content"
 d = open(os.path.join(out, "scratch_tank.def")).read()
 assert '{extension "scratch_tank.mdl"}' in d and '{volume "body1"' in d, "def content"

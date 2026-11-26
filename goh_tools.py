@@ -2564,7 +2564,11 @@ def build_mdl_text(arm, view_names, new_actions, mdl_comment=""):
         Wp = W[b.parent.name] if b.parent and b.parent.name in names else None
         Lc = (Wp.inverted() @ W[b.name]) if Wp is not None else W[b.name]
         cur12 = _matrix_to_l12(Lc)
-        L.extend(_xform_lines(v12 if _close(v12, cur12) else cur12, Wp is None, indent + 1))
+        if Wp is None and arm.get("goh_root_flip"):
+            # every vehicle of the game has a mirrored root (Y flipped): models are authored right-handed, the engine mirrors the world
+            L.extend(_xform_lines([1, 0, 0, 0, -1, 0, 0, 0, 1, 0, 0, 0], True, indent + 1))
+        else:
+            L.extend(_xform_lines(v12 if _close(v12, cur12) else cur12, Wp is None, indent + 1))
         views = json.loads(pb.get("goh_views", "[]"))
         groups = []
         for f, lod in views:
@@ -2879,6 +2883,7 @@ def create_rig(name, kind="tank", scale=SCALE):
         pb = arm.pose.bones[bn]; pb.rotation_mode = "QUATERNION"
         if joint: pb["goh_joint"] = joint
     arm["goh_scratch_kind"] = kind
+    if kind == "tank": arm["goh_root_flip"] = True          # as in all 488 vehicles of the game, see build_mdl_text
     arm["goh_volumes_json"] = "[]"; arm["goh_seqs_json"] = "[]"
     _stamp_local(arm)
     if kind == "tank": setup_tracks(arm, report=lambda s: None)
