@@ -25,6 +25,16 @@ $blender = "D:/Program Files/Steam/steamapps/common/Blender/blender.exe"
 
 # export safety: other models' clips left out, duplicate animation names reported / stop / continue
 & $blender --background --factory-startup --python tests/duplicates.py
+
+# model from scratch: rig template, attach outside meshes, generated volumes, check report, export + re-import
+& $blender --background --factory-startup --python tests/from_scratch.py
+
+# edge cases of those tools (unit factor, mirrored meshes, modifiers, volume reduction, checks, belt deformation)
+& $blender --background --factory-startup --python tests/scratch_edge.py
+
+# baked clips on a real game tank (recoil direction compared with the game's own fire.anm), model check on game models
+& $blender --background --factory-startup --python tests/bake_game.py
+& $blender --background --factory-startup --python tests/validate_game.py
 ```
 
 * Files extracted from the game's `.pak` archives are cached in `tests/.cache` (git-ignored); exports go to `tests/out`.

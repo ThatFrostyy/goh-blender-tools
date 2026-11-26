@@ -49,6 +49,27 @@ Select the model's armature, **File > Export > Gates of Hell model (.mdl)**, pic
 An unchanged import round-trips: positions and UVs exact, normals within 0.001, tangents about 1 degree, bones, weights, animations and
 properties identical (see `tests/`).
 
+## Models from scratch or from other software
+Sidebar tab **GOH** in the 3D view (N panel) next to the import / export buttons:
+* **New model rig**: an armature with the bone names the game expects. Template *Tank* has `basis`, `body`, `turret`, `gun_rot`, `gun`, wheels, seats,
+  fuel / ammo points and fx points; *Blank* is just a root. Game units are 5 cm and the armature object carries that scale, so build your model **in metres** and it comes out right-sized.
+* **Attach mesh to bone**: select the meshes (made in any program, any scale), make the armature active, pick the bone. Modifiers are applied and the vertices are moved into the bone's frame in game units
+  (set "metres per Blender unit" if the mesh was modelled in centimetres or inches). The exporter writes raw vertices, so this step is what puts the part in the right place.
+* **Collision volume from mesh**: convex hull (merged until at most 5000 triangles) or box of the selected meshes, written as `.vol` and attached to the bone you choose.
+  A volume is one convex part: use one per hull / turret / barrel for hollow or L-shaped parts. Armour thickness goes into the starter `.def`.
+* **Set up tracks and suspension**: per side a `wheels{l,r}` bone (`id=trackleft/trackright`), sliding suspension bones (limits +-0.1 m, speed 0.18) with a wheel bone each (spin about the side axis, `radius` in metres), `susp` and `track` bones,
+  and a **skinned track belt** (outer and inner surface, UVs along the belt, every vertex follows its two nearest suspension bones) around the wheel circles. The *Tank* template already contains them; the operator adds them to any rig.
+  Bone layout, parameters and the wheel orientation matrix are the ones of the game's own tanks. The belt uses the tracks material `$/_vehicle/tracks/m3_stuart_track`; change `goh_diffuse` / `goh_bump` / `goh_specular` on the material `goh_track` for another one.
+* **Bake recoil / firing / impact clips**: actions named like the game's own, for the gun bone and the hull bone: `fire` (gun slides back 0.22 m in 4 frames and returns slowly, small hull kick), `hit` (hull shudder),
+  `start` / `stop` (engine vibration) and `spring` (hull settles on its suspension). The recoil goes straight back along the gun's parent frame, like the game's own `fire.anm` (checked against a game tank).
+  Existing clips of the same name are replaced. They are plain Actions: edit the curves, then export.
+* **Check model**: lists what the game would refuse or silently drop (meshes not on a bone or moved out of their bone's frame, missing required bones, more than 65535 vertices, duplicate names)
+  and warns about missing materials / textures / UVs / collision and unusual model size. The report is the text block `goh_check`; the export dialog can also write it as `goh_check.txt`
+  with the size and SHA-1 of every written file.
+* A rig made by the template exports a **starter `.def`** (tank entity with your volumes as armour entries); weapons, crew and sounds still have to be filled in by hand or copied from a similar unit.
+  Not covered: animations (author them as Actions), tracks / skinned suspension, and the unit's `.set` registration.
+From Python: `create_rig`, `adopt_mesh`, `generate_volume`, `validate_model`, `format_report` (see `tests/from_scratch.py`).
+
 ## Differences between model types
 Soldiers come in two styles: an older one (a single baked `skin.ply` with duplicate skin bones) and the game's current modular one (head, tunic,
 trousers and gear as separate parts on one `skin` bone, taken from shared source folders). Vehicles are rigid parts plus skinned tracks and suspension,
