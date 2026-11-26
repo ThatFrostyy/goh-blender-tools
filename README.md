@@ -51,10 +51,25 @@ properties identical (see `tests/`).
 
 ## Models from scratch or from other software
 Sidebar tab **GOH** in the 3D view (N panel) next to the import / export buttons:
-* **New model rig**: an armature with the bone names the game expects. Template *Tank* has `basis`, `body`, `turret`, `gun_rot`, `gun`, wheels, seats,
-  fuel / ammo points and fx points; *Blank* is just a root. Game units are 5 cm and the armature object carries that scale, so build your model **in metres** and it comes out right-sized.
+* **New model rig**: an armature with the bone names the game expects. Game units are 5 cm and the armature object carries that scale, so build your model **in metres** and it comes out right-sized.
+  * *Tank*: `basis`, `body`, `turret`, `gun_rot`, `gun`, tracks and suspension, seats, fuel / ammo points and fx points.
+  * *Car* (laid out like the game's `citroen_7_civ`, a 4.2 m car, front +X, left +Y, ground z 0): `body`, `engine` + `engine_hood`, `backdoor` (trunk), `doorleft1` / `doorright1` with
+    their door windows, windscreen `window1`, rear window `window6`, revolute `steer`, wipers, 4 wheels with the game's pivot / steering knuckle / sliding suspension / wheel chain (and the phantom 3rd wheels
+    the game's cars carry), `susp_front` / `susp_back`, `driver` / `commander` seats, door exits `emit1` / `emit2`, lights `headlightl/r`, brake lights `fxstop1/2`, `fxfire1/5`, exhaust `fxsmoke1`,
+    `fuel`, `transmission`; ids (`id=body`, `id=engine`, `id=windowN`, `id=wheelleft1` ...) and `steermax` / `wheelradius` set. Move the bones to your car, then **Bake clips**.
+    The starter `.def` is a car entity (`car.ext`, wheels, glass, fuel, crew of 2, door boarding animations, chassis and mobility).
+  * *Helmet / cap*: the game's wearable layout, `basis` > `ger_headwear` at the head bone (front +X, up +Z, a helmet shell sits 0.1-0.24 m above the bone). The starter `.def` is the item;
+    register it with a file `resource/set/stuff/head/<name>` containing `{from "pattern heavy_headgear" {tag "armor"} {entity "<name>"}}`.
+  * *Blank*: just a root.
 * **Attach mesh to bone**: select the meshes (made in any program, any scale), make the armature active, pick the bone. Modifiers are applied and the vertices are moved into the bone's frame in game units
   (set "metres per Blender unit" if the mesh was modelled in centimetres or inches). The exporter writes raw vertices, so this step is what puts the part in the right place.
+  A mesh with weights for the rig's bones (a body, clothes) becomes a **skinned part** on the `skin` bone instead, in the frame the game's own body parts use (the bone frame including the
+  mirrored root's flip, otherwise the part comes out upside down).
+* **Copy bone weights**: select new body / clothing meshes and, as active, a skinned mesh of the rig (e.g. an imported game body part placed over it). Weights are copied by nearest surface and limited to
+  2 bones per vertex like the game's. Python: `transfer_weights(new, game_part)`, then `adopt_skin_mesh(new, arm)`, or `replace_part(arm, game_part, new)` which does the attaching and leaves the old part out.
+* **Meshes from other games**: triangles are written facing the way their shading normals point, so models that mix both windings (hair cards, cloth, mirrored halves) do not get holes in the game.
+* **Replacing parts of a game model**: delete an imported mesh (or use `replace_part`) and the export leaves it out together with its lower detail levels instead of copying the game's file back in.
+  Exporting under a new name makes a new entity: the `.def` gets the new name for the model and, for inventory items (weapons, helmets), for `{item "..."}` too.
 * **Collision volume from mesh**: convex hull (merged until at most 5000 triangles) or box of the selected meshes, written as `.vol` and attached to the bone you choose.
   A volume is one convex part: use one per hull / turret / barrel for hollow or L-shaped parts. Armour thickness goes into the starter `.def`.
 * **Set up tracks and suspension**: per side a `wheels{l,r}` bone (`id=trackleft/trackright`), sliding suspension bones (limits +-0.1 m, speed 0.18) with a wheel bone each (spin about the side axis, `radius` in metres), `susp` and `track` bones,
@@ -63,15 +78,19 @@ Sidebar tab **GOH** in the 3D view (N panel) next to the import / export buttons
 * **Bake recoil / firing / impact clips**: actions named like the game's own, for the gun bone and the hull bone: `fire` (gun slides back 0.22 m in 4 frames and returns slowly, small hull kick), `hit` (hull shudder),
   `start` / `stop` (engine vibration) and `spring` (hull settles on its suspension). The recoil goes straight back along the gun's parent frame, like the game's own `fire.anm` (checked against a game tank).
   Existing clips of the same name are replaced. They are plain Actions: edit the curves, then export.
+  On a car the button bakes the car's clips instead, named and timed like the game's: `doorleft1` / `doorright1` (open in 6 frames, close at frames 40-46, events `open_left` / `open_right`, used by the
+  crew boarding), `engine_r` / `body_r` as the engine's and body's `repair` sequences (hood and trunk shut, body settles), and `hit` / `start` / `stop`. Clips that a bone plays as its own sequence are
+  not listed again at skeleton level.
 * **Check model**: lists what the game would refuse or silently drop (meshes not on a bone or moved out of their bone's frame, missing required bones, more than 65535 vertices, duplicate names)
   and warns about missing materials / textures / UVs / collision and unusual model size. The report is the text block `goh_check`; the export dialog can also write it as `goh_check.txt`
   with the size and SHA-1 of every written file.
 * **Left / right**: all 488 vehicles of the game have a mirrored root bone (`basis` with Y flipped); models are authored the normal right-handed way (front +X, left +Y) and the engine mirrors the world.
-  Rigs made by the *Tank* template get that root written on export. Imported game models show up mirrored left-to-right in Blender for the same reason (their `wheell` bones sit at -Y), so do not copy parts between
+  Rigs made by the *Tank*, *Car* and *Helmet* templates get that root written on export. Imported game models show up mirrored left-to-right in Blender for the same reason (their `wheell` bones sit at -Y), so do not copy parts between
   an imported model and a from-scratch one without mirroring them.
 * A rig made by the template exports a **starter `.def`** (tank entity with your volumes as armour entries; it expands with the game's own includes to the same properties as a real tank's `.def`, except weapon places and crew seats, which still have to be filled in by hand or copied from a similar unit).
   Not covered: animations (author them as Actions), tracks / skinned suspension, and the unit's `.set` registration.
-From Python: `create_rig`, `adopt_mesh`, `generate_volume`, `validate_model`, `format_report` (see `tests/from_scratch.py`).
+From Python: `create_rig`, `adopt_mesh`, `adopt_skin_mesh`, `transfer_weights`, `replace_part`, `generate_volume`, `setup_car_wheels`, `bake_car_clips`, `validate_model`, `format_report`
+(see `tests/from_scratch.py` and `tests/model_types.py`).
 
 ## Differences between model types
 Soldiers come in two styles: an older one (a single baked `skin.ply` with duplicate skin bones) and the game's current modular one (head, tunic,

@@ -32,6 +32,10 @@ $blender = "D:/Program Files/Steam/steamapps/common/Blender/blender.exe"
 # edge cases of those tools (unit factor, mirrored meshes, modifiers, volume reduction, checks, belt deformation)
 & $blender --background --factory-startup --python tests/scratch_edge.py
 
+# model types: car template + car clips, helmet template, body part swapped on a game human (frame, weights, old part left out,
+# mixed-winding mesh), renamed item, re-import of everything
+& $blender --background --factory-startup --python tests/model_types.py
+
 # baked clips on a real game tank (recoil direction compared with the game's own fire.anm), model check on game models
 & $blender --background --factory-startup --python tests/bake_game.py
 & $blender --background --factory-startup --python tests/validate_game.py

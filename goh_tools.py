@@ -606,10 +606,18 @@ _img_cache = {}
 _mat_cache = {}
 
 
+def _alive(idblock):
+    """False for a datablock deleted since it was cached (new file / factory reset / user deleted it in the same session)"""
+    try:
+        idblock.name; return True
+    except (ReferenceError, AttributeError):
+        return False
+
+
 def load_image(path, noncolor=False):
     if not path: return None
     key = (path, noncolor)
-    if key in _img_cache: return _img_cache[key]
+    if key in _img_cache and _alive(_img_cache[key]): return _img_cache[key]
     try:
         im = bpy.data.images.load(path, check_existing=True)
         if noncolor: im.colorspace_settings.name = "Non-Color"
@@ -628,7 +636,7 @@ def _input(bsdf, *names):
 def make_material(mtl_path, res):
     name = os.path.splitext(os.path.basename(mtl_path))[0]
     key = os.path.normpath(mtl_path).lower()
-    if key in _mat_cache and _mat_cache[key].name in bpy.data.materials: return _mat_cache[key]
+    if key in _mat_cache and _alive(_mat_cache[key]) and _mat_cache[key].name in bpy.data.materials: return _mat_cache[key]
     info = parse_mtl(mtl_path)
     mat = bpy.data.materials.new(name); _mat_cache[key] = mat
     mat.use_nodes = True
@@ -2369,10 +2377,17 @@ def write_ply(path, obj, arm, report=print):
     groups = [[] for _ in range(slots)]
     # game meshes are wound clockwise (front face = clockwise in the file, the mirrored root turns it around); the importer
     # keeps that order, so imported meshes are written as they are. Meshes made in Blender are counter-clockwise: reverse them.
+    # Meshes made elsewhere are oriented per triangle from their shading normals: models from other games often mix both
+    # windings (hair cards, cloth, mirrored parts) and would otherwise show holes where the game culls the reversed faces.
     flip = "goh_mesh_hdr" not in me.keys()
+    co = [v.co for v in me.vertices]
     for t in me.loop_triangles:
         tri = tuple(loop_to_idx[l] for l in t.loops)
-        groups[min(t.material_index, slots - 1)].append((tri[0], tri[2], tri[1]) if flip else tri)
+        if flip:
+            a, b, c = (co[me.loops[l].vertex_index] for l in t.loops)
+            n = normals[t.loops[0]] + normals[t.loops[1]] + normals[t.loops[2]]
+            if (b - a).cross(c - a).dot(n) > 0: tri = (tri[0], tri[2], tri[1])
+        groups[min(t.material_index, slots - 1)].append(tri)
     hdrs = json.loads(me.get("goh_mesh_hdr", "[]"))
     col_att = me.attributes.get("goh_color32")
     default_a = 0x112 | (0x40 if col_att is not None else 0) | (0x200 if uvl2 is not None else 0)
@@ -2536,7 +2551,9 @@ def build_mdl_text(arm, view_names, new_actions, mdl_comment=""):
     known = {s["name"] for s in seqs}
     for pb in arm.pose.bones:
         for s in json.loads(pb.get("goh_sequences", "[]")): known.add(s["name"])
+    bone_files = {os.path.splitext(x["file"])[0].lower() for pb in arm.pose.bones for x in json.loads(pb.get("goh_sequences", "[]")) if x.get("file")}
     for nm, speed, events in new_actions:
+        if nm.lower() in bone_files: continue          # e.g. engine_r.anm, played by the engine bone's "repair" sequence
         if nm not in known: seqs.append({"name": nm, "file": None, "speed": speed, "resume": False, "autostart": False, "events": events})
     extras = json.loads(arm.get("goh_extras_json", "{}"))
     L.append("{skeleton")
@@ -2663,12 +2680,12 @@ def _unflatten_volume(changed):
     return L
 
 
-def def_text_with_edits(arm):
+def def_text_with_edits(arm, mdl_name="model"):
     """the .def text; volume properties changed in Blender are appended as override blocks"""
     tname = arm.get("goh_def_text")
     txt = bpy.data.texts[tname].as_string() if tname and tname in bpy.data.texts else None
     if txt is None:
-        return starter_def_text(arm) if arm.get("goh_scratch_kind") else None
+        return starter_def_text(arm, mdl_name) if arm.get("goh_scratch_kind") else None
     add = []
     for ob in bpy.data.objects:
         if ob.parent != arm or "goh_orig_json" not in ob.keys(): continue
@@ -2741,6 +2758,20 @@ def export_mdl(arm, out_dir, mdl_name=None, meshes=True, anims=True, library_ani
     visuals = [o for o in kids if "goh_volume" not in o.keys() and "goh_kind" not in o.keys()]
     vol_objs = {o["goh_vol_name"]: o for o in kids if "goh_vol_name" in o.keys()}
     view_names = {}; seen_files = {}
+    # meshes of an imported model that were deleted (or swapped with replace_part) leave the model, lower detail levels included
+    if meshes and arm.get("goh_model"):
+        present = {o.get("goh_ply") for o in visuals if o.get("goh_ply")}
+        for pb in arm.pose.bones:
+            views = json.loads(pb.get("goh_views", "[]"))
+            if not views: continue
+            keep, group, gone = [], [], []
+            for f, lod in views + [(None, 0)]:
+                if lod == 0 and group:
+                    (keep if group[0][0] in present else gone).extend(group); group = []
+                if f is not None: group.append([f, lod])
+            if gone:
+                pb["goh_views"] = json.dumps(keep)
+                report("[goh] bone %s: left out the deleted mesh %s" % (pb.get("goh_orig_name", pb.name), ", ".join(sorted({os.path.basename(g[0]) for g in gone if g[1] == 0}))))
     # ---- meshes
     if meshes:
         for ob in visuals:
@@ -2824,11 +2855,16 @@ def export_mdl(arm, out_dir, mdl_name=None, meshes=True, anims=True, library_ani
     open(w(os.path.join(out_dir, mdl_name + ".mdl")), "w", encoding="utf-8", newline="\n").write(text)
     # ---- .def / local .ext
     if def_files:
-        dtxt = def_text_with_edits(arm)
+        dtxt = def_text_with_edits(arm, mdl_name)
         if dtxt:
             old_mdl = os.path.splitext(os.path.basename(arm.get("goh_model", "")))[0]
             if old_mdl != mdl_name:
                 dtxt = re.sub(r'(\{\s*extension\s+")[^"]*(")', r"\g<1>%s.mdl\g<2>" % mdl_name, dtxt, flags=re.I)
+                # inventory items (weapons, helmets, ammo models) name themselves in {extender "stuff" {item "..."}}: a renamed
+                # model is a new item, so the item name follows (the game's own items use the entity name there)
+                old_ent = os.path.splitext(os.path.basename(arm.get("goh_def_file", "")))[0]
+                for old in {old_mdl, old_ent} - {""}:
+                    dtxt = re.sub(r'(\{\s*item\s+")%s(")' % re.escape(old), r"\g<1>%s\g<2>" % mdl_name, dtxt, flags=re.I)
             dname = os.path.basename(arm.get("goh_def_file", "")) or (mdl_name + ".def")
             if old_mdl != mdl_name: dname = mdl_name + ".def"      # a renamed model is a new entity: its .def is named after it
             open(w(os.path.join(out_dir, dname)), "w", encoding="utf-8", newline="\n").write(dtxt)
@@ -2864,11 +2900,120 @@ TANK_BONES = (
     ("seat03", "body", (-10, 8, 6), None), ("seat04", "body", (-10, -8, 6), None),
     ("fxfire1", "engine", (0, 0, 4), None), ("fxsmoke1", "engine", (-4, 0, 4), None),
 )
+# A car like the game's own (layout of generic/car/citroen_7_civ): a ~4.2 m car, front +X, left +Y, ground at z 0.
+# Positions in game units relative to the parent. Wheels, steering and suspension are added by setup_car_wheels().
+CAR_BONES = (
+    ("basis", None, (0, 0, 0), None),
+    ("body", "basis", (0, 0, 10), None),
+    ("engine", "body", (23, 0, 0), None),
+    ("engine_hood", "engine", (-11.5, 0, 7.8), None),
+    ("backdoor", "body", (-23.6, 0, 10), None),
+    ("doorleft1", "body", (8, 16, 1.4), None), ("doorright1", "body", (8, -16, 1.4), None),
+    ("window1", "body", (5, 0, 11), None), ("window6", "body", (-22, 0, 12), None),
+    ("window2", "doorleft1", (-12, -1.5, 7), None), ("window3", "doorright1", (-12, 1.5, 7), None),
+    ("steer", "body", (0, 7.4, 6.5), "revolute"),
+    ("wiperl", "body", (11.6, 12.4, 7), None), ("wiperr", "body", (13.5, 1.7, 7.2), None),
+    ("visor1", "body", (5, -6, 10), None), ("visor2", "body", (5, 6, 10), None),
+    ("headlightl", "body", (35.6, 12.4, 3.2), None), ("headlightr", "body", (35.6, -12.4, 3.2), None),
+    ("transmission", "body", (8, 0, -4), None), ("fuel", "body", (-20, 0, -3), None),
+    ("enumerator1", "body", (40, 0, -4), None),
+)
+HEADWEAR_BONES = (
+    ("basis", None, (0, 0, 0), None),
+    ("ger_headwear", "basis", (0, 0, 0), None),
+)
 RIG_TEMPLATES = {
     "tank": {"bones": TANK_BONES, "required": ("basis", "body", "turret", "gun_rot", "gun"),
              "recommended": ("fuel1", "ammo1", "seat01", "wheell1", "wheelr1", "trackl", "trackr", "fxfire1", "fxsmoke1"), "length_m": (3.0, 12.0)},
+    "car": {"bones": CAR_BONES, "required": ("basis", "body", "wheell1", "wheelr1", "wheell2", "wheelr2"),
+            "recommended": ("engine", "doorleft1", "doorright1", "driver", "emit1", "fuel", "headlightl", "fxstop1", "fxsmoke1"), "length_m": (2.5, 9.0)},
+    "headwear": {"bones": HEADWEAR_BONES, "required": ("basis", "ger_headwear"), "recommended": (), "length_m": (0.1, 0.6)},
     "blank": {"bones": (("basis", None, (0, 0, 0), None), ("body", "basis", (0, 0, 0), None)), "required": ("basis",), "recommended": (), "length_m": (0.1, 100.0)},
 }
+ROOT_FLIP_KINDS = ("tank", "car", "headwear")      # the game's vehicles and wearables all have the mirrored root
+
+
+def _rows(rows, t=(0, 0, 0)):
+    """matrix as written in a .mdl (rows R, translation) -> local column matrix"""
+    m = Matrix(rows).transposed().to_4x4(); m.translation = Vector(t); return m
+
+
+def setup_car_wheels(arm, x_front=24.0, x_rear=-24.7, half_track=15.4, radius=0.32, steer_offset=2.0, report=print):
+    """Wheels like the game's cars: pivot_front / pivot_back at axle height, steering knuckles steer{l,r}1 (revolute, the
+       game's flipped frame), sliding suspension_{l,r}N (limits +-0.08 m, speed 0.05), revolute wheel{l,r}N (spin about the
+       side axis, id=wheelleft1 ..., radius in metres), phantom 3rd wheels the game's cars carry, susp_front/back for the
+       suspension meshes, wheel trace fx points, seats (driver, commander) and door exit points (emit1, emit2).
+       Units: game units (5 cm) relative to basis; radius in metres."""
+    R = radius * 20.0
+    FLIP = ((1, 0, 0), (0, -1, 0), (0, 0, -1)); LAT = ((1, 0, 0), (0, 0, -1), (0, 1, 0))
+    specs = []
+    for piv, px, front in (("pivot_front", x_front, True), ("pivot_back", x_rear, False)):
+        specs.append((piv, "basis", Matrix.Translation((px, 0, R)), {}))
+        for s, sg in (("l", 1), ("r", -1)):
+            side = "left" if s == "l" else "right"; k = "1" if front else "2"
+            if front:
+                st = "steer%s1" % s
+                specs.append((st, piv, _rows(FLIP, (0, sg * (half_track - steer_offset), 0)), {"goh_joint": "revolute"}))
+                specs.append(("fxtrace%s1" % s, st, _rows(((-0.9962, 0, -0.0872), (0, 1, 0), (0.0872, 0, -0.9962)), (0, -sg * steer_offset, R)), {}))
+                specs.append(("suspension_%s1" % s, st, _rows(FLIP), {"goh_joint": "prismatic", "goh_limits": [-0.08, 0.08], "goh_speed": 0.05}))
+                specs.append(("wheel%s1" % s, "suspension_%s1" % s, _rows(LAT, (0, sg * steer_offset, 0)),
+                              {"goh_joint": "revolute", "goh_param_id": "wheel%s1" % side, "goh_param_radius": radius}))
+            else:
+                specs.append(("suspension_%s2" % s, piv, Matrix.Translation((0, sg * half_track, 0)), {"goh_joint": "prismatic", "goh_limits": [-0.08, 0.08], "goh_speed": 0.05}))
+                specs.append(("wheel%s2" % s, "suspension_%s2" % s, _rows(LAT), {"goh_joint": "revolute", "goh_param_id": "wheel%s2" % side, "goh_param_radius": radius}))
+                specs.append(("fxtrace%s2" % s, piv, _rows(((-0.9397, 0, 0.342), (0, -1, 0), (0.342, 0, 0.9397)), (-5.0, sg * (half_track + 1.0), 1.8 - R)), {}))
+        if front:
+            for s, sg in (("r", -1), ("l", 1)):
+                specs.append(("suspension_%s3" % s, piv, Matrix.Translation((0, sg * (half_track - steer_offset), 0)), {"goh_joint": "prismatic", "goh_limits": [-0.08, 0.08], "goh_speed": 0.05}))
+                specs.append(("wheel%s3" % s, "suspension_%s3" % s, _rows(LAT), {"goh_joint": "revolute", "goh_param_id": "wheel%s3" % ("left" if s == "l" else "right"), "goh_param_radius": radius}))
+        specs.append(("susp_front" if front else "susp_back", piv, Matrix.Identity(4), {"goh_param_id": "body"}))
+    SEAT = ((0.9272, 0, 0.3746), (0, 1, 0), (-0.3746, 0, 0.9272)); BACK = ((-1, 0, 0), (0, -1, 0), (0, 0, 1)); UP = ((0, 0, 1), (0, 1, 0), (-1, 0, 0))
+    specs += [("driver", "body", _rows(SEAT, (-3.5, 4.8, -7.3)), {}), ("commander", "body", _rows(SEAT, (-3.5, -4.8, -7.3)), {}),
+              ("fxstop1", "body", _rows(BACK, (-40, 12.4, 5.2)), {}), ("fxstop2", "body", _rows(BACK, (-40, -12.4, 5.2)), {}),
+              ("fxfire1", "body", _rows(UP, (22, 0, 4.4)), {}), ("fxfire5", "body", _rows(UP, (-7, 0, -1)), {}),
+              ("fxsmoke1", "body", _rows(BACK, (-40, 8.8, -4.4)), {}),
+              ("emit1", "basis", _rows(((0, -1, 0), (1, 0, 0), (0, 0, 1)), (-1, 25, 0)), {}),
+              ("emit2", "basis", _rows(((0, 1, 0), (-1, 0, 0), (0, 0, 1)), (-1, -25, 0)), {})]
+    add_bones(arm, specs)
+    pb = arm.pose.bones["basis"]; pb["goh_param_steermax"] = 32; pb["goh_param_wheelradius"] = radius
+    for n in ("body", "engine", "engine_hood", "backdoor", "doorleft1", "doorright1", "steer", "wiperl", "wiperr"):
+        if n in arm.pose.bones: arm.pose.bones[n]["goh_param_id"] = "engine" if n.startswith("engine") else "body"
+    for n in ("window1", "window2", "window3", "window6"):
+        if n in arm.pose.bones: arm.pose.bones[n]["goh_param_id"] = n
+    report("[goh] car wheels: front x %.1f, rear x %.1f, track %.1f units, wheel radius %.2f m" % (x_front, x_rear, half_track * 2, radius))
+
+
+def bake_car_clips(arm, door_angle=68.0, hood_angle=48.0, trunk_angle=50.0, report=print):
+    """The clips the game's cars have, named and timed like them (citroen_7_civ): doorleft1 / doorright1 (open in 6 frames,
+       stay open, close at 40-46, event open_left / open_right at frame 1, speed 0.3) for every door bone present, the repair
+       clips engine_r (hood shuts) and body_r (body settles, trunk shuts) as bone sequences, and hit / start / stop."""
+    _stamp_local(arm)
+    made = []; seqs = [s for s in json.loads(arm.get("goh_seqs_json", "[]")) if s["name"] not in ("doorleft1", "doorright1", "doorleft2", "doorright2")]
+    ease = lambda t: (lambda u: u * u * (3 - 2 * u))(max(0.0, min(1.0, t)))
+    N = 47; door = [ease(f / 6.0) if f <= 6 else (1.0 if f < 40 else 1.0 - ease((f - 40) / 6.0)) for f in range(N)]
+    for bn, sg, ev in (("doorleft1", -1, "open_left"), ("doorright1", 1, "open_right"), ("doorleft2", 1, "open_left"), ("doorright2", -1, "open_right")):
+        if bn not in arm.pose.bones: continue
+        # front doors hinge at their front edge (rear swings out), rear doors as the game's at their rear edge
+        act = _make_clip(arm, bn, _rot_curves(arm, bn, [(0, 0, sg * math.radians(door_angle) * v) for v in door]), 0.3, N)
+        act.pose_markers.new(ev).frame = 2
+        seqs.append({"name": bn, "file": None, "speed": 0.3, "events": [[1, ev]]}); made.append(act)
+    N = 21; close = [1 - ease(f / 9.0) for f in range(N)]
+    if "engine_hood" in arm.pose.bones and "engine" in arm.pose.bones:
+        made.append(_make_clip(arm, "engine_r", _rot_curves(arm, "engine_hood", [(0, -math.radians(hood_angle) * v, 0) for v in close]), 0.7, N))
+        arm.pose.bones["engine"]["goh_sequences"] = json.dumps([{"name": "repair", "file": "engine_r.anm", "speed": 0.7}])
+    cb = _loc_curves(arm, "body", [(0, 0, -0.6 * v) for v in close])
+    cb.update(_rot_curves(arm, "body", [(math.radians(2) * v, math.radians(1) * v, 0) for v in close]))
+    if "backdoor" in arm.pose.bones: cb.update(_rot_curves(arm, "backdoor", [(0, math.radians(trunk_angle) * v, 0) for v in close]))
+    made.append(_make_clip(arm, "body_r", cb, 0.7, N))
+    arm.pose.bones["body"]["goh_sequences"] = json.dumps([{"name": "repair", "file": "body_r.anm", "speed": 0.7}])
+    made += bake_clips(arm, gun="body", body="body", which=("hit", "start", "stop"), report=lambda s: None)
+    names = {s["name"] for s in seqs}
+    for nm in ("hit", "start", "stop"):
+        if nm not in names: seqs.insert(0, {"name": nm, "file": None, "speed": 0.6})
+    arm["goh_seqs_json"] = json.dumps(seqs)
+    arm["goh_bone_sequence_clips"] = json.dumps(["engine_r", "body_r"])      # bone sequences only, not skeleton-level
+    report("[goh] car clips: %s" % ", ".join(a.name for a in made))
+    return made
 _IDENT12 = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
 
 
@@ -2896,10 +3041,11 @@ def create_rig(name, kind="tank", scale=SCALE):
         pb = arm.pose.bones[bn]; pb.rotation_mode = "QUATERNION"
         if joint: pb["goh_joint"] = joint
     arm["goh_scratch_kind"] = kind
-    if kind == "tank": arm["goh_root_flip"] = True          # as in all 488 vehicles of the game, see build_mdl_text
+    if kind in ROOT_FLIP_KINDS: arm["goh_root_flip"] = True   # as in all 488 vehicles (and the wearables) of the game, see build_mdl_text
     arm["goh_volumes_json"] = "[]"; arm["goh_seqs_json"] = "[]"
     _stamp_local(arm)
     if kind == "tank": setup_tracks(arm, report=lambda s: None)
+    if kind == "car": setup_car_wheels(arm, report=lambda s: None)
     return arm
 
 
@@ -2910,6 +3056,80 @@ def _bone_rest(arm, bone_name):
     """matrix that parents a rigid mesh to the bone with its own frame = the bone's frame in the .mdl"""
     bone = arm.data.bones[bone_name]
     return _arm_s(arm) @ bone.matrix_local @ Matrix.Translation((0, bone.length, 0)), _arm_s(arm) @ bone.matrix_local
+
+
+def skin_frame(arm, bone_name):
+    """world frame the exporter writes a skinned mesh's raw vertices in: the bone's frame including the Z flip a bone under a
+       mirrored root carries (goh_F). The game's own skinned parts are imported in exactly this frame."""
+    pb = arm.pose.bones[bone_name]
+    return _arm_s(arm) @ arm.data.bones[bone_name].matrix_local @ Matrix.Diagonal((1, 1, pb.get("goh_F", 1), 1))
+
+
+def adopt_skin_mesh(ob, arm, bone_name="skin", report=print):
+    """Turn a skinned mesh made anywhere (already placed over the rig in Blender, vertex groups named after the rig's bones)
+       into a skinned part of the model: modifiers other than Armature applied, vertices into the skin bone's frame, the object
+       follows the rig with an Armature modifier. Use transfer_weights() first if it has no weights for this rig yet."""
+    if bone_name not in arm.data.bones: raise ValueError("bone %s not found" % bone_name)
+    keep = [m for m in ob.modifiers if m.type == "ARMATURE"]
+    for m in keep: ob.modifiers.remove(m)
+    dg = bpy.context.evaluated_depsgraph_get()
+    me = bpy.data.meshes.new_from_object(ob.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg)
+    W = skin_frame(arm, bone_name)
+    M = W.inverted() @ ob.matrix_world
+    me.transform(M)
+    if M.determinant() < 0: me.flip_normals()
+    if me.uv_layers and "UVMap" not in me.uv_layers: me.uv_layers[0].name = "UVMap"
+    old = ob.data; ob.modifiers.clear(); ob.data = me; me.name = old.name
+    if old.users == 0: bpy.data.meshes.remove(old)
+    ob.parent = arm; ob.parent_type = "OBJECT"; ob.matrix_parent_inverse = Matrix.Identity(4)
+    ob.matrix_world = W
+    md = ob.modifiers.new("Armature", "ARMATURE"); md.object = arm
+    ob["goh_bone"] = arm.pose.bones[bone_name].get("goh_orig_name", bone_name)
+    missing = [g.name for g in ob.vertex_groups if g.name not in arm.data.bones]
+    if missing: report("[goh] WARNING %s: vertex groups without a bone in the rig are ignored: %s" % (ob.name, ", ".join(missing[:8])))
+    report("[goh] %s -> skinned on %s, %d vertices, %d bone groups" % (ob.name, bone_name, len(me.vertices), len(ob.vertex_groups) - len(missing)))
+    return ob
+
+
+def transfer_weights(ob, source, max_bones=2, keep_groups=False, report=print):
+    """Copy bone weights from a skinned mesh of the rig (e.g. an imported game body part) to ob by nearest surface, then limit
+       them to max_bones per vertex (the game format uses 2) and normalise. Both objects must overlap in the viewport."""
+    if not keep_groups: ob.vertex_groups.clear()
+    for g in source.vertex_groups:
+        if g.name not in ob.vertex_groups: ob.vertex_groups.new(name=g.name)
+    m = ob.modifiers.new("goh_dt", "DATA_TRANSFER"); m.object = source
+    m.use_vert_data = True; m.data_types_verts = {"VGROUP_WEIGHTS"}; m.vert_mapping = "POLYINTERP_NEAREST"
+    m.layers_vgroup_select_src = "ALL"; m.layers_vgroup_select_dst = "NAME"
+    while ob.modifiers[0] != m: ob.modifiers.move(ob.modifiers.find(m.name), 0)
+    with bpy.context.temp_override(object=ob, active_object=ob):
+        bpy.ops.object.modifier_apply(modifier=m.name)
+    limit_weights(ob, max_bones)
+    report("[goh] %s: weights from %s, %d bones" % (ob.name, source.name, len(ob.vertex_groups)))
+
+
+def limit_weights(ob, max_bones=2, min_weight=0.02):
+    """at most max_bones weights per vertex, normalised; empty groups removed"""
+    used = set()
+    for v in ob.data.vertices:
+        ws = sorted(((g.group, g.weight) for g in v.groups), key=lambda x: -x[1])
+        keep = [x for x in ws[:max_bones] if x[1] > min_weight] or ws[:1]
+        tot = sum(w for _g, w in keep) or 1.0
+        for gi, _w in ws: ob.vertex_groups[gi].remove([v.index])
+        for gi, w in keep: ob.vertex_groups[gi].add([v.index], w / tot, "REPLACE"); used.add(gi)
+    for g in [g for g in ob.vertex_groups if g.index not in used]: ob.vertex_groups.remove(g)
+
+
+def replace_part(arm, old_obj, new_obj, report=print):
+    """Swap one of an imported model's meshes for a new one: the new mesh takes the old one's bone and frame (rigid) or the
+       skin bone frame (skinned), and the old mesh, together with its lower detail levels, is left out of the export."""
+    skinned = any(m.type == "ARMATURE" for m in old_obj.modifiers)
+    if skinned:
+        adopt_skin_mesh(new_obj, arm, old_obj.get("goh_bone") or "skin", report)
+    else:
+        bn = old_obj.parent_bone
+        adopt_mesh(new_obj, arm, bn, report=report)
+    bpy.data.objects.remove(old_obj, do_unlink=True)
+    return new_obj
 
 
 def _attach(ob, arm, bone_name):
@@ -3281,7 +3501,7 @@ def validate_model(arm):
         if not o.get("goh_ply") and skinned and not o.get("goh_bone"):
             add("error", "skinned mesh %s does not say which bone carries it (custom property goh_bone), so the exporter would drop it" % o.name)
         elif not o.get("goh_ply") and skinned and o.get("goh_bone") in arm.data.bones:
-            fr = _arm_s(arm) @ arm.data.bones[o["goh_bone"]].matrix_local
+            fr = skin_frame(arm, o["goh_bone"])
             if max(abs(x - y) for ra, rb in zip(o.matrix_world, fr) for x, y in zip(ra, rb)) > 1e-3:
                 add("error", "skinned mesh %s is not in the frame of its bone %s (object moved or scaled); the exporter writes raw vertices" % (o.name, o["goh_bone"]))
         if not o.get("goh_ply") and not skinned:
@@ -3363,6 +3583,33 @@ def starter_def_text(arm, mdl_name="model"):
               '\t; add {Weaponry ...} with the gun and machine gun places, {extender "inventory"} with the ammo, and crew / seat lines here', '',
               '\t{mass 12000}', '\t{Chassis', '\t\t("tank_trace" fx("tracks_sm2") step(0.2) len(0.47))',
               '\t\t("mobility_tank" speed(40) reverse(8) traverse(30) weight(12) power(250) track(10.0) fuel(200) type(fuel) range(100))', '\t}', '']
+    elif arm.get("goh_scratch_kind") == "car":
+        names = {b.name for b in arm.data.bones}
+        vnames = [v["name"] for v in vols]
+        L += ['\t(include "/properties/car.ext")', '\t(include "/properties/selection/vehicle_elongated.inc" scale(0.8))',
+              '\t{props "citroen_7" "vision_lev01" "explosion_throw_crew"}\t; "citroen_7": engine and door sounds of the game\'s car',
+              '\t{extension "%s.mdl"}' % mdl_name, '\t{able "emit_on_attack"}', '\t{PatherId "kubel"}', '']
+        L += ['\t("wheel" args "%s")' % w for w in ("wheelleft1", "wheelleft2", "wheelright1", "wheelright2")]
+        L += ['\t("glass" args "%s")' % w for w in ("window1", "window2", "window3", "window4", "window5", "window6") if w in vnames]
+        if "fuel" in names: L.append('\t("fuel" args "fuel")')
+        if "transmission" in names: L.append('\t("fuel" args "transmission")')
+        L += ['\t("car_thickness" body(1.5) engine(1.5))', '\t{volume "body2" {able {holed}}}', '', '\t("crew_2_human")']
+        if "doorleft1" in names and "doorright1" in names:
+            L += ['\t{boarder', '\t\t{anm "driver"', '\t\t\t{forward\t{begin\t"board_Kubel_driver"} {end "seat_kubel_driver"} {base "doorleft1"}}',
+                  '\t\t\t{reverse\t{end\t"board_Kubel_driver" -1} {base "doorleft1" -1}}', '\t\t}', '\t\t{anm "commander"',
+                  '\t\t\t{forward\t{begin\t"board_Kubel_commander"} {end "seat_kubel_commander"} {base "doorright1"}}',
+                  '\t\t\t{reverse\t{end\t"board_Kubel_commander" -1} {base "doorright1" -1}}', '\t\t}', '\t}']
+        L += ['', '\t{mass 1200}', '\t{Chassis',
+              '\t\t("car_trace" fx("tracewheel03") step(0.08) wheell("wlf") wheelr("wrf") bonel("FXtraceL1") boner("FXtraceR1"))',
+              '\t\t("car_trace" fx("tracewheel03") step(0.08) wheell("wlr") wheelr("wrr") bonel("FXtraceL2") boner("FXtraceR2"))',
+              '\t\t("mobility_car" speed(95) speedatmaxturn(12) reverse(18) weight(1.2) power(60) fuel(45) type(fuel) range(400))', '\t}']
+        vols = []        # car_thickness gives the body volumes their armour
+    elif arm.get("goh_scratch_kind") == "headwear":
+        L = [";SDL", "; starter helmet / cap item written by goh_tools", "{actor", '\t(include "/properties/stuff_small.ext")',
+             '\t{extender "stuff"', '\t\t{item "%s"}' % mdl_name, '\t}', '\t{Extension "%s.mdl"}' % mdl_name, "}",
+             "; register it as an item with the file resource/set/stuff/head/%s containing:" % mdl_name,
+             ';   {from "pattern heavy_headgear" {tag "armor"} {entity "%s"}}      (or "pattern light_headgear" for caps)' % mdl_name]
+        return "\n".join(L) + "\n"
     else:
         L += ['\t{extension "%s.mdl"}' % mdl_name, '']
     for v in vols:
@@ -3485,10 +3732,17 @@ try:
         bl_description = "Create an armature with the bone names the game expects"
         bl_options = {"REGISTER", "UNDO"}
         name: StringProperty(name="Name", default="my_model")
-        kind: bpy.props.EnumProperty(name="Template", items=[("tank", "Tank", "hull, turret, gun, wheels, seats, fuel / ammo points"), ("blank", "Blank", "root bone only")], default="tank")
+        kind: bpy.props.EnumProperty(name="Template", items=[
+            ("tank", "Tank", "hull, turret, gun, tracks, seats, fuel / ammo points"),
+            ("car", "Car", "body, engine, hood, trunk, 2 doors, windows, steering wheel, wipers, 4 sprung and steered wheels, seats, door exits, lights, fx points"),
+            ("headwear", "Helmet / cap", "an item worn on the head: ger_headwear bone at the head bone (front +X, up +Z, the shell 0.1-0.24 m above the bone)"),
+            ("blank", "Blank", "root bone only")], default="tank")
 
         def execute(self, context):
-            create_rig(self.name, self.kind); self.report({"INFO"}, "rig created: model in metres, parts attached with 'Attach mesh to bone'"); return {"FINISHED"}
+            create_rig(self.name, self.kind)
+            tip = {"car": "front +X, left +Y, wheels on z 0; bones are where a 4.2 m car has them - move them to your model, then 'Bake clips'",
+                   "headwear": "model it on a head: front +X, top about 0.24 m above the bone; item file goes in set/stuff/head (see the .def)"}.get(self.kind, "")
+            self.report({"INFO"}, "rig created: model in metres, parts attached with 'Attach mesh to bone'. " + tip); return {"FINISHED"}
 
         def invoke(self, context, event): return context.window_manager.invoke_props_dialog(self)
 
@@ -3511,7 +3765,14 @@ try:
             objs = [o for o in context.selected_objects if o.type == "MESH" and o.get("goh_volume") is None]
             if arm is None or not objs: self.report({"ERROR"}, "select mesh objects and the armature"); return {"CANCELLED"}
             try:
-                for o in objs: adopt_mesh(o, arm, self.bone, self.factor, report=lambda s: self.report({"INFO"}, s))
+                for o in objs:
+                    # weighted to the rig's bones -> a skinned part (body, clothes) in the skin bone's frame; otherwise a rigid part
+                    skinned = any(g.name in arm.data.bones and g.name != self.bone for g in o.vertex_groups)
+                    if skinned:
+                        sb = self.bone if self.bone == "skin" or "skin" not in arm.data.bones else "skin"
+                        adopt_skin_mesh(o, arm, sb, report=lambda s: self.report({"INFO"}, s))
+                    else:
+                        adopt_mesh(o, arm, self.bone, self.factor, report=lambda s: self.report({"INFO"}, s))
             except Exception as e:
                 self.report({"ERROR"}, str(e)); return {"CANCELLED"}
             return {"FINISHED"}
@@ -3606,8 +3867,25 @@ try:
         def execute(self, context):
             arm = _find_arm(context)
             if arm is None: self.report({"ERROR"}, "make the armature active"); return {"CANCELLED"}
-            try: bake_clips(arm, self.gun, self.body, self.recoil, kick_deg=self.kick, shake_deg=self.shake, report=lambda s: self.report({"INFO"}, s))
+            car = arm.get("goh_scratch_kind") == "car" or ("gun" not in arm.data.bones and "doorleft1" in arm.data.bones)
+            try:
+                if car: bake_car_clips(arm, report=lambda s: self.report({"INFO"}, s))
+                else: bake_clips(arm, self.gun, self.body, self.recoil, kick_deg=self.kick, shake_deg=self.shake, report=lambda s: self.report({"INFO"}, s))
             except Exception as e: self.report({"ERROR"}, str(e)); return {"CANCELLED"}
+            return {"FINISHED"}
+
+    class GOH_OT_weights(bpy.types.Operator):
+        bl_idname = "goh.copy_weights"; bl_label = "Copy bone weights"
+        bl_description = ("Select the new body / clothing meshes, then (active) a skinned mesh of the rig, e.g. an imported game body part. "
+                          "Weights are copied by nearest surface, limited to 2 bones per vertex like the game's")
+        bl_options = {"REGISTER", "UNDO"}
+
+        def execute(self, context):
+            src = context.active_object
+            dst = [o for o in context.selected_objects if o.type == "MESH" and o is not src]
+            if src is None or src.type != "MESH" or not src.vertex_groups or not dst:
+                self.report({"ERROR"}, "select the new meshes, then a skinned mesh of the rig as active"); return {"CANCELLED"}
+            for o in dst: transfer_weights(o, src, report=lambda s: self.report({"INFO"}, s))
             return {"FINISHED"}
 
     class GOH_PT_panel(bpy.types.Panel):
@@ -3622,6 +3900,7 @@ try:
             c = self.layout.column(align=True)
             c.label(text="Build / convert")
             c.operator(GOH_OT_new_rig.bl_idname, icon="ARMATURE_DATA")
+            c.operator(GOH_OT_weights.bl_idname, icon="MOD_VERTEX_WEIGHT")
             c.operator(GOH_OT_adopt.bl_idname, icon="BONE_DATA")
             c.operator(GOH_OT_volume.bl_idname, icon="MESH_ICOSPHERE")
             c.operator(GOH_OT_tracks.bl_idname, icon="MOD_SOLIDIFY")
@@ -3635,7 +3914,7 @@ try:
         self.layout.operator(EXPORT_OT_goh_mdl.bl_idname, text="Gates of Hell model (.mdl)")
 
     def register():
-        for cls in (IMPORT_OT_goh_mdl, EXPORT_OT_goh_mdl, GOH_OT_new_rig, GOH_OT_adopt, GOH_OT_volume, GOH_OT_tracks, GOH_OT_bake, GOH_OT_validate, GOH_PT_panel):
+        for cls in (IMPORT_OT_goh_mdl, EXPORT_OT_goh_mdl, GOH_OT_new_rig, GOH_OT_adopt, GOH_OT_weights, GOH_OT_volume, GOH_OT_tracks, GOH_OT_bake, GOH_OT_validate, GOH_PT_panel):
             try: bpy.utils.register_class(cls)
             except ValueError: pass
         for menu, fn in ((bpy.types.TOPBAR_MT_file_import, _menu), (bpy.types.TOPBAR_MT_file_export, _menu_export)):
@@ -3646,7 +3925,7 @@ try:
     def unregister():
         bpy.types.TOPBAR_MT_file_import.remove(_menu)
         bpy.types.TOPBAR_MT_file_export.remove(_menu_export)
-        for cls in (GOH_PT_panel, GOH_OT_validate, GOH_OT_bake, GOH_OT_tracks, GOH_OT_volume, GOH_OT_adopt, GOH_OT_new_rig, EXPORT_OT_goh_mdl, IMPORT_OT_goh_mdl):
+        for cls in (GOH_PT_panel, GOH_OT_validate, GOH_OT_bake, GOH_OT_tracks, GOH_OT_volume, GOH_OT_weights, GOH_OT_adopt, GOH_OT_new_rig, EXPORT_OT_goh_mdl, IMPORT_OT_goh_mdl):
             bpy.utils.unregister_class(cls)
 except Exception as _e:   # running without UI helpers
     def register(): pass
