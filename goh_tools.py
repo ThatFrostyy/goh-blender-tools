@@ -2261,6 +2261,15 @@ def write_vol(path, obj):
     out = bytearray(b"EVLM" + b"VERT" + struct.pack("<I", nv))
     for v in me.vertices: out += struct.pack("<3f", *v.co)
     tris = [(t.vertices[0], t.vertices[1], t.vertices[2], t.polygon_index) for t in me.loop_triangles]
+    # the game's volumes are convex and every triangle is wound clockwise seen from outside (all game files);
+    # enforce that here so volumes made in Blender (counter-clockwise) work too - game volumes stay as they are
+    if nv:
+        ctr = sum((v.co for v in me.vertices), Vector()) / nv
+        fixed = []
+        for a, b, c, p in tris:
+            va, vb, vc = me.vertices[a].co, me.vertices[b].co, me.vertices[c].co
+            fixed.append((a, c, b, p) if (vb - va).cross(vc - va).dot((va + vb + vc) / 3 - ctr) > 0 else (a, b, c, p))
+        tris = fixed
     out += b"INDX" + struct.pack("<I", len(tris) * 3)
     for a, b, c, _p in tris: out += struct.pack("<3H", a, b, c)
     att = me.attributes.get("goh_side")
@@ -2358,8 +2367,12 @@ def write_ply(path, obj, arm, report=print):
     # ---- triangles grouped by material slot
     slots = max(len(me.materials), 1)
     groups = [[] for _ in range(slots)]
+    # game meshes are wound clockwise (front face = clockwise in the file, the mirrored root turns it around); the importer
+    # keeps that order, so imported meshes are written as they are. Meshes made in Blender are counter-clockwise: reverse them.
+    flip = "goh_mesh_hdr" not in me.keys()
     for t in me.loop_triangles:
-        groups[min(t.material_index, slots - 1)].append(tuple(loop_to_idx[l] for l in t.loops))
+        tri = tuple(loop_to_idx[l] for l in t.loops)
+        groups[min(t.material_index, slots - 1)].append((tri[0], tri[2], tri[1]) if flip else tri)
     hdrs = json.loads(me.get("goh_mesh_hdr", "[]"))
     col_att = me.attributes.get("goh_color32")
     default_a = 0x112 | (0x40 if col_att is not None else 0) | (0x200 if uvl2 is not None else 0)

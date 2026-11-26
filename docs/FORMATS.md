@@ -25,6 +25,10 @@ build 1.0.6.9 (hundreds of models, all packs) and by import -> export -> import 
 | `d & 0x100` | vertex has a tangent (material has a bump map) |
 | `d`         | `0x404` simple, `+0x100` bump, `+0x200` specular map (`0x704` = bump + specular) |
 
+Triangles are wound **clockwise** seen from the side the normals point to (every game mesh; the mirrored root bone turns it around
+in the engine). The importer keeps the file order; meshes made in Blender (counter-clockwise) are reversed on export, or the game culls
+their outside and shows the inside. `.vol` triangles are clockwise seen from outside as well (enforced on export).
+
 Rigid vertex order: `position(3f) [normal(3f)] [colour(i32)] uv(2f) [uv2(2f)] [tangent(4f)]` (a few meshes have 8 trailing padding bytes).
 Typical: stride 32 (pos, normal, uv), 48 (+tangent), 36 / 52 / 60 (with colour), 40 / 56 (second uv).
 uv is stored with v pointing down (Blender v = 1 - v). The tangent is (x, y, z, w) with w = +-1 handedness; the game's w is the opposite of Blender's
