@@ -3262,21 +3262,30 @@ def add_bones(arm, specs):
 
 
 def setup_tracks(arm, parent="body", wheels=6, radius=0.32, end_radius=0.2, x_front=40.0, x_rear=-40.0, z=-9.0, half_track=17.0,
-                 width=9.0, thickness=1.2, travel=0.1, report=print):
+                 width=9.0, thickness=1.2, travel=0.1, report=print, xs=None, zs=None, radii=None):
     """Suspension and track bones like the game's tracked vehicles, plus a skinned track belt around the wheels, for both sides.
        Per side: wheels{l,r} (id=track{left,right}) > suspension (sliding, limits +-travel m) > wheel (spin about its side axis, radius in metres),
-       and a track{l,r} bone carrying the belt mesh. Positions are game units (5 cm) relative to the parent bone."""
+       and a track{l,r} bone carrying the belt mesh. Positions are game units (5 cm) relative to the parent bone.
+       xs / zs (game units, per wheel, front to rear) and radii (metres) place every wheel by hand instead of an even row of two radii."""
     if parent not in arm.data.bones: raise ValueError("bone %s not found" % parent)
     if wheels < 2: raise ValueError("need at least 2 wheels")
     if "body_virt" in arm.data.bones: raise ValueError("this rig already has track bones (body_virt)")
+    xs_given = xs
     xs = [x_front + (x_rear - x_front) * i / (wheels - 1) for i in range(wheels)]
     rad = [end_radius if i in (0, wheels - 1) else radius for i in range(wheels)]
+    zz = [z + (0 if rad[i] == radius else (radius - rad[i]) * 20.0) for i in range(wheels)]
+    if xs_given is not None or zs is not None or radii is not None:
+        xs = list(xs_given) if xs_given is not None else [x_front + (x_rear - x_front) * i / (wheels - 1) for i in range(wheels)]
+        wheels = len(xs)
+        rad = list(radii) if radii is not None else [radius] * wheels
+        zz = list(zs) if zs is not None else [z] * wheels
+        if not (len(rad) == len(zz) == wheels): raise ValueError("xs, zs and radii must have the same length")
     specs = [("body_virt", parent, Matrix.Identity(4), {})]
     sides = (("l", 1, "trackleft"), ("r", -1, "trackright"))
     for s, sg, tid in sides:
         specs.append(("wheels" + s, "body_virt", Matrix.Translation((0, sg * half_track, 0)), {"goh_param_id": tid}))
         for i in range(wheels):
-            specs.append(("suspension_%s%d" % (s, i + 1), "wheels" + s, Matrix.Translation((xs[i], 0, z + (0 if rad[i] == radius else (radius - rad[i]) * 20.0))),
+            specs.append(("suspension_%s%d" % (s, i + 1), "wheels" + s, Matrix.Translation((xs[i], 0, zz[i])),
                           {"goh_joint": "prismatic", "goh_limits": [-travel, travel], "goh_speed": 0.18}))
             specs.append(("wheel%s%d" % (s, i + 1), "suspension_%s%d" % (s, i + 1), LATERAL_AXIS,
                           {"goh_joint": "revolute", "goh_param_id": tid, "goh_param_radius": round(rad[i], 4)}))
@@ -3285,7 +3294,7 @@ def setup_tracks(arm, parent="body", wheels=6, radius=0.32, end_radius=0.2, x_fr
     add_bones(arm, specs)
     made = []
     for s, sg, tid in sides:
-        centres = [(xs[i], z + (0 if rad[i] == radius else (radius - rad[i]) * 20.0)) for i in range(wheels)]
+        centres = [(xs[i], zz[i]) for i in range(wheels)]
         made.append(build_track_belt(arm, s, centres, [r * 20.0 for r in rad], width, thickness, ["suspension_%s%d" % (s, i + 1) for i in range(wheels)]))
     report("[goh] tracks: %d wheels per side, belts %s" % (wheels, ", ".join(o.name for o in made)))
     return made
